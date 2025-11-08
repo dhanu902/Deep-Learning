@@ -39,7 +39,14 @@ class Transformer(nn.Module):
         :param num_layers: number of TransformerLayers to use; can be whatever you want
         """
         super().__init__()
-        raise Exception("Implement me")
+
+        self.embed = nn.Embedding(vocab_size, d_model)
+        self.posenc = PositionalEncoding(d_model, num_positions=num_positions, batched=False)
+        self.layers = nn.ModuleList([TransformerLayer(d_model, d_internal) for _ in range(num_layers)])
+        self.out = nn.Linear(d_model, num_classes)
+        self.logsm = nn.LogSoftmax(dim=-1)
+
+        #raise Exception("Implement me")
 
     def forward(self, indices):
         """
@@ -48,7 +55,19 @@ class Transformer(nn.Module):
         :return: A tuple of the softmax log probabilities (should be a 20x3 matrix) and a list of the attention
         maps you use in your layers (can be variable length, but each should be a 20x20 matrix)
         """
-        raise Exception("Implement me")
+
+        # indices: [20]
+        x = self.embed(indices)                  # [20, d_model]
+        x = self.posenc(x)                       # [20, d_model]
+        attn_maps = []
+        for layer in self.layers:
+            x, attn = layer(x)                   # x: [20, d_model], attn: [20, 20]
+            attn_maps.append(attn)
+        logits = self.out(x)                     # [20, 3]
+        log_probs = self.logsm(logits)           # [20, 3]
+        return log_probs, attn_maps
+
+        #raise Exception("Implement me")
 
 
 # Your implementation of the Transformer layer goes here. It should take vectors and return the same number of vectors
@@ -62,10 +81,39 @@ class TransformerLayer(nn.Module):
         should both be of this length.
         """
         super().__init__()
-        raise Exception("Implement me")
+        self.q = nn.Linear(d_model, d_internal)
+        self.k = nn.Linear(d_model, d_internal)
+        self.v = nn.Linear(d_model, d_internal)
+        self.o = nn.Linear(d_internal, d_model)
+
+        self.ff = nn.Sequential(
+            nn.Linear(d_model, 4 * d_model),
+            nn.GELU(),
+            nn.Linear(4 * d_model, d_model)
+        )
+        self.ln1 = nn.LayerNorm(d_model)
+        self.ln2 = nn.LayerNorm(d_model)
+
+        #raise Exception("Implement me")
 
     def forward(self, input_vecs):
-        raise Exception("Implement me")
+        # input_vecs: [20, d_model]
+        x = self.ln1(input_vecs)
+        Q = self.q(x)                            # [20, d_int]
+        K = self.k(x)                            # [20, d_int]
+        V = self.v(x)                            # [20, d_int]
+        scale = (K.shape[-1]) ** 0.5
+        scores = (Q @ K.transpose(0, 1)) / scale # [20, 20]
+        attn = torch.softmax(scores, dim=-1)     # [20, 20]
+        context = attn @ V                       # [20, d_int]
+        x = input_vecs + self.o(context)         # Residual 1
+
+        y = self.ln2(x)
+        y = self.ff(y)                           # [20, d_model]
+        out = x + y                              # Residual 2
+        return out, attn
+    
+        #raise Exception("Implement me")
 
 
 # Implementation of positional encoding that you can use in your network
@@ -103,29 +151,38 @@ class PositionalEncoding(nn.Module):
 
 # This is a skeleton for train_classifier: you can implement this however you want
 def train_classifier(args, train, dev):
-    raise Exception("Not fully implemented yet")
+    #raise Exception("Not fully implemented yet")
+
+    torch.manual_seed(0)
+    vocab_size = 27
+    num_positions = 20
+    d_model = 64
+    d_internal = 64
+    num_classes = 3
+    num_layers = 1
 
     # The following code DOES NOT WORK but can be a starting point for your implementation
     # Some suggested snippets to use:
-    model = Transformer(...)
-    model.zero_grad()
-    model.train()
-    optimizer = optim.Adam(model.parameters(), lr=1e-4)
+    model = Transformer(vocab_size, num_positions, d_model, d_internal, num_classes, num_layers)
+    optimizer = optim.Adam(model.parameters(), lr=1e-3)
+    loss_fcn = nn.NLLLoss()
 
+    model.train()
     num_epochs = 10
-    for t in range(0, num_epochs):
-        loss_this_epoch = 0.0
-        random.seed(t)
-        # You can use batching if you'd like
-        ex_idxs = [i for i in range(0, len(train))]
+    for epoch in range(num_epochs):
+        ex_idxs = list(range(len(train)))
         random.shuffle(ex_idxs)
-        loss_fcn = nn.NLLLoss()
-        for ex_idx in ex_idxs:
-            loss = loss_fcn(...) # TODO: Run forward and compute loss
-            # model.zero_grad()
-            # loss.backward()
-            # optimizer.step()
-            loss_this_epoch += loss.item()
+        epoch_loss = 0.0
+        for i in ex_idxs:
+            ex = train[i]
+            log_probs, _ = model(ex.input_tensor)              # [20,3]
+            loss = loss_fcn(log_probs, ex.output_tensor.long())# targets [20]
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+            epoch_loss += loss.item()
+        # print(f"Epoch {epoch+1}: loss={epoch_loss/len(train):.4f}")
+
     model.eval()
     return model
 
