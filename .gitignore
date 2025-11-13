@@ -1,12 +1,46 @@
 # OS junk
 .DS_Store
 ._*
+Thumbs.db
+
 # Python
 __pycache__/
 *.py[cod]
+*.pyo
 *.egg-info/
+
+# Virtual environments
 .venv/
 venv/
 ENV/
 .env
+
+# Jupyter notebooks
 .ipynb_checkpoints/
+
+# Build / dist artifacts
+build/
+dist/
+
+# Caches and coverage
+.cache/
+.pytest_cache/
+.mypy_cache/
+.pytype/
+.tox/
+.coverage
+coverage.xml
+
+# Logs & temporary files
+*.log
+*.tmp
+*.swp
+*.swo
+
+# Model artifacts / large outputs
+*.pt
+*.pth
+*.h5
+*.ckpt
+plots/
+outputs/

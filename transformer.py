@@ -10,12 +10,6 @@ import matplotlib.pyplot as plt
 from typing import List
 from utils import *
 
-
-# Wraps an example: stores the raw input string (input), the indexed form of the string (input_indexed),
-# a tensorized version of that (input_tensor), the raw outputs (output; a numpy array) and a tensorized version
-# of it (output_tensor).
-# Per the task definition, the outputs are 0, 1, or 2 based on whether the character occurs 0, 1, or 2 or more
-# times previously in the input sequence (not counting the current occurrence).
 class LetterCountingExample(object):
     def __init__(self, input: str, output: np.array, vocab_index: Indexer):
         self.input = input
@@ -24,62 +18,40 @@ class LetterCountingExample(object):
         self.output = output
         self.output_tensor = torch.LongTensor(self.output)
 
-
-# Should contain your overall Transformer implementation. You will want to use Transformer layer to implement
-# a single layer of the Transformer; this Module will take the raw words as input and do all of the steps necessary
-# to return distributions over the labels (0, 1, or 2).
 class Transformer(nn.Module):
-    def __init__(self, vocab_size, num_positions, d_model, d_internal, num_classes, num_layers):
-        """
-        :param vocab_size: vocabulary size of the embedding layer
-        :param num_positions: max sequence length that will be fed to the model; should be 20
-        :param d_model: see TransformerLayer
-        :param d_internal: see TransformerLayer
-        :param num_classes: number of classes predicted at the output layer; should be 3
-        :param num_layers: number of TransformerLayers to use; can be whatever you want
-        """
+    def __init__(self, vocab_size, num_positions, d_model, d_internal, num_classes, num_layers, attend_backward_only: bool = True):
+
         super().__init__()
 
         self.embed = nn.Embedding(vocab_size, d_model)
         self.posenc = PositionalEncoding(d_model, num_positions=num_positions, batched=False)
         self.layers = nn.ModuleList([TransformerLayer(d_model, d_internal) for _ in range(num_layers)])
         self.out = nn.Linear(d_model, num_classes)
-        self.logsm = nn.LogSoftmax(dim=-1)
-
-        #raise Exception("Implement me")
+        self.logsm = nn.LogSoftmax(dim=1)
+        self.attend_backward_only = attend_backward_only
 
     def forward(self, indices):
-        """
-
-        :param indices: list of input indices
-        :return: A tuple of the softmax log probabilities (should be a 20x3 matrix) and a list of the attention
-        maps you use in your layers (can be variable length, but each should be a 20x20 matrix)
-        """
-
         # indices: [20]
-        x = self.embed(indices)                  # [20, d_model]
-        x = self.posenc(x)                       # [20, d_model]
+        x = self.embed(indices)                 
+        x = self.posenc(x)                       
+        L = x.size(0)
+
+        attn_mask = None
+        if self.attend_backward_only:
+
+            attn_mask = torch.triu(torch.ones(L, L, dtype=torch.bool, device=x.device), diagonal=1)
+
         attn_maps = []
         for layer in self.layers:
-            x, attn = layer(x)                   # x: [20, d_model], attn: [20, 20]
+            x, attn = layer(x, attn_mask=attn_mask)                   
             attn_maps.append(attn)
-        logits = self.out(x)                     # [20, 3]
-        log_probs = self.logsm(logits)           # [20, 3]
+        logits = self.out(x)                     
+        log_probs = self.logsm(logits)           
         return log_probs, attn_maps
 
-        #raise Exception("Implement me")
-
-
-# Your implementation of the Transformer layer goes here. It should take vectors and return the same number of vectors
-# of the same length, applying self-attention, the feedforward layer, etc.
 class TransformerLayer(nn.Module):
     def __init__(self, d_model, d_internal):
-        """
-        :param d_model: The dimension of the inputs and outputs of the layer (note that the inputs and outputs
-        have to be the same size for the residual connection to work)
-        :param d_internal: The "internal" dimension used in the self-attention computation. Your keys and queries
-        should both be of this length.
-        """
+
         super().__init__()
         self.q = nn.Linear(d_model, d_internal)
         self.k = nn.Linear(d_model, d_internal)
@@ -93,95 +65,104 @@ class TransformerLayer(nn.Module):
         )
         self.ln1 = nn.LayerNorm(d_model)
         self.ln2 = nn.LayerNorm(d_model)
+        self.dropout = nn.Dropout(p=0.1)
 
-        #raise Exception("Implement me")
-
-    def forward(self, input_vecs):
-        # input_vecs: [20, d_model]
+    def forward(self, input_vecs, attn_mask=None):
+        
         x = self.ln1(input_vecs)
-        Q = self.q(x)                            # [20, d_int]
-        K = self.k(x)                            # [20, d_int]
-        V = self.v(x)                            # [20, d_int]
+        Q = self.q(x)                            
+        K = self.k(x)                             
+        V = self.v(x)                            
         scale = (K.shape[-1]) ** 0.5
-        scores = (Q @ K.transpose(0, 1)) / scale # [20, 20]
-        attn = torch.softmax(scores, dim=-1)     # [20, 20]
-        context = attn @ V                       # [20, d_int]
-        x = input_vecs + self.o(context)         # Residual 1
+        scores = (Q @ K.transpose(0, 1)) / scale  
+
+        if attn_mask is not None:
+             
+            scores = scores.masked_fill(attn_mask, float('-inf'))
+
+        attn = torch.softmax(scores, dim=-1)      
+        context = attn @ V                       
+        x = input_vecs + self.dropout(self.o(context))    
 
         y = self.ln2(x)
-        y = self.ff(y)                           # [20, d_model]
-        out = x + y                              # Residual 2
+        y = self.dropout(self.ff(y))                        
+        out = x + y                             
         return out, attn
-    
-        #raise Exception("Implement me")
-
-
-# Implementation of positional encoding that you can use in your network
+ 
 class PositionalEncoding(nn.Module):
     def __init__(self, d_model: int, num_positions: int=20, batched=False):
-        """
-        :param d_model: dimensionality of the embedding layer to your model; since the position encodings are being
-        added to character encodings, these need to match (and will match the dimension of the subsequent Transformer
-        layer inputs/outputs)
-        :param num_positions: the number of positions that need to be encoded; the maximum sequence length this
-        module will see
-        :param batched: True if you are using batching, False otherwise
-        """
+
         super().__init__()
-        # Dict size
+
         self.emb = nn.Embedding(num_positions, d_model)
         self.batched = batched
 
     def forward(self, x):
-        """
-        :param x: If using batching, should be [batch size, seq len, embedding dim]. Otherwise, [seq len, embedding dim]
-        :return: a tensor of the same size with positional embeddings added in
-        """
-        # Second-to-last dimension will always be sequence length
         input_size = x.shape[-2]
-        indices_to_embed = torch.tensor(np.asarray(range(0, input_size))).type(torch.LongTensor)
+        indices_to_embed = torch.arange(input_size, device=x.device, dtype=torch.long)
         if self.batched:
-            # Use unsqueeze to form a [1, seq len, embedding dim] tensor -- broadcasting will ensure that this
-            # gets added correctly across the batch
             emb_unsq = self.emb(indices_to_embed).unsqueeze(0)
             return x + emb_unsq
         else:
             return x + self.emb(indices_to_embed)
 
 
-# This is a skeleton for train_classifier: you can implement this however you want
 def train_classifier(args, train, dev):
-    #raise Exception("Not fully implemented yet")
-
-    torch.manual_seed(0)
+    
+    random.seed(42); np.random.seed(42); torch.manual_seed(42)
+    attend_backward_only = True if args.task == "BEFORE" else False
+    
     vocab_size = 27
     num_positions = 20
     d_model = 64
     d_internal = 64
     num_classes = 3
-    num_layers = 1
+    num_layers = 2
 
-    # The following code DOES NOT WORK but can be a starting point for your implementation
-    # Some suggested snippets to use:
-    model = Transformer(vocab_size, num_positions, d_model, d_internal, num_classes, num_layers)
+    model = Transformer(vocab_size, num_positions, d_model, d_internal, num_classes, num_layers, attend_backward_only=attend_backward_only)
     optimizer = optim.Adam(model.parameters(), lr=1e-3)
     loss_fcn = nn.NLLLoss()
 
     model.train()
     num_epochs = 10
+
+    best_acc, best_state = -1.0, None
+
     for epoch in range(num_epochs):
         ex_idxs = list(range(len(train)))
         random.shuffle(ex_idxs)
         epoch_loss = 0.0
+
         for i in ex_idxs:
             ex = train[i]
-            log_probs, _ = model(ex.input_tensor)              # [20,3]
-            loss = loss_fcn(log_probs, ex.output_tensor.long())# targets [20]
+            log_probs, _ = model(ex.input_tensor)              
+            loss = loss_fcn(log_probs, ex.output_tensor.long())
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
             epoch_loss += loss.item()
-        # print(f"Epoch {epoch+1}: loss={epoch_loss/len(train):.4f}")
+        
+        print(f"Epoch {epoch+1}/{num_epochs} - loss={epoch_loss:.4f}")
+
+        model.eval()
+        correct = total = 0
+        with torch.no_grad():
+            for ex in dev[:200]:  
+                logp, _ = model(ex.input_tensor)
+                pred = torch.argmax(logp, dim=1)
+                correct += int((pred == ex.output_tensor).sum())
+                total += len(pred)
+        dev_acc = correct / total if total else 0.0
+        print(f"  dev_acc={dev_acc:.4f}")
+
+        if dev_acc > best_acc:
+            best_acc = dev_acc
+            best_state = {k: v.clone() for k, v in model.state_dict().items()}
+
+        model.train()
+
+    if best_state is not None:
+        model.load_state_dict(best_state)
 
     model.eval()
     return model
