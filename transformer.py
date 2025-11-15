@@ -19,31 +19,21 @@ class LetterCountingExample(object):
         self.output_tensor = torch.LongTensor(self.output)
 
 class Transformer(nn.Module):
-    def __init__(self, vocab_size, num_positions, d_model, d_internal, num_classes, num_layers, attend_backward_only: bool = True):
-
+    def __init__(self, vocab_size, num_positions, d_model, d_internal, num_classes, num_layers):
         super().__init__()
 
         self.embed = nn.Embedding(vocab_size, d_model)
         self.posenc = PositionalEncoding(d_model, num_positions=num_positions, batched=False)
         self.layers = nn.ModuleList([TransformerLayer(d_model, d_internal) for _ in range(num_layers)])
         self.out = nn.Linear(d_model, num_classes)
-        self.logsm = nn.LogSoftmax(dim=1)
-        self.attend_backward_only = attend_backward_only
+        self.logsm = nn.LogSoftmax(dim=-1)
 
     def forward(self, indices):
-        # indices: [20]
         x = self.embed(indices)                 
         x = self.posenc(x)                       
-        L = x.size(0)
-
-        attn_mask = None
-        if self.attend_backward_only:
-
-            attn_mask = torch.triu(torch.ones(L, L, dtype=torch.bool, device=x.device), diagonal=1)
-
         attn_maps = []
         for layer in self.layers:
-            x, attn = layer(x, attn_mask=attn_mask)                   
+            x, attn = layer(x)                   
             attn_maps.append(attn)
         logits = self.out(x)                     
         log_probs = self.logsm(logits)           
@@ -51,7 +41,6 @@ class Transformer(nn.Module):
 
 class TransformerLayer(nn.Module):
     def __init__(self, d_model, d_internal):
-
         super().__init__()
         self.q = nn.Linear(d_model, d_internal)
         self.k = nn.Linear(d_model, d_internal)
@@ -65,41 +54,32 @@ class TransformerLayer(nn.Module):
         )
         self.ln1 = nn.LayerNorm(d_model)
         self.ln2 = nn.LayerNorm(d_model)
-        self.dropout = nn.Dropout(p=0.1)
 
-    def forward(self, input_vecs, attn_mask=None):
-        
+    def forward(self, input_vecs):
         x = self.ln1(input_vecs)
         Q = self.q(x)                            
-        K = self.k(x)                             
+        K = self.k(x)                            
         V = self.v(x)                            
         scale = (K.shape[-1]) ** 0.5
-        scores = (Q @ K.transpose(0, 1)) / scale  
-
-        if attn_mask is not None:
-             
-            scores = scores.masked_fill(attn_mask, float('-inf'))
-
-        attn = torch.softmax(scores, dim=-1)      
+        scores = (Q @ K.transpose(0, 1)) / scale 
+        attn = torch.softmax(scores, dim=-1)     
         context = attn @ V                       
-        x = input_vecs + self.dropout(self.o(context))    
-
+        x = input_vecs + self.o(context)         
         y = self.ln2(x)
-        y = self.dropout(self.ff(y))                        
-        out = x + y                             
+        y = self.ff(y)                           
+        out = x + y                              
         return out, attn
- 
+
+# Implementation of positional encoding that you can use in your network
 class PositionalEncoding(nn.Module):
     def __init__(self, d_model: int, num_positions: int=20, batched=False):
-
         super().__init__()
-
         self.emb = nn.Embedding(num_positions, d_model)
         self.batched = batched
 
     def forward(self, x):
         input_size = x.shape[-2]
-        indices_to_embed = torch.arange(input_size, device=x.device, dtype=torch.long)
+        indices_to_embed = torch.tensor(np.asarray(range(0, input_size))).type(torch.LongTensor)
         if self.batched:
             emb_unsq = self.emb(indices_to_embed).unsqueeze(0)
             return x + emb_unsq
@@ -108,31 +88,23 @@ class PositionalEncoding(nn.Module):
 
 
 def train_classifier(args, train, dev):
-    
-    random.seed(42); np.random.seed(42); torch.manual_seed(42)
-    attend_backward_only = True if args.task == "BEFORE" else False
-    
+    torch.manual_seed(0)
     vocab_size = 27
     num_positions = 20
     d_model = 64
     d_internal = 64
     num_classes = 3
-    num_layers = 2
-
-    model = Transformer(vocab_size, num_positions, d_model, d_internal, num_classes, num_layers, attend_backward_only=attend_backward_only)
+    num_layers = 1
+    model = Transformer(vocab_size, num_positions, d_model, d_internal, num_classes, num_layers)
     optimizer = optim.Adam(model.parameters(), lr=1e-3)
     loss_fcn = nn.NLLLoss()
 
     model.train()
     num_epochs = 10
-
-    best_acc, best_state = -1.0, None
-
     for epoch in range(num_epochs):
         ex_idxs = list(range(len(train)))
         random.shuffle(ex_idxs)
         epoch_loss = 0.0
-
         for i in ex_idxs:
             ex = train[i]
             log_probs, _ = model(ex.input_tensor)              
@@ -141,28 +113,6 @@ def train_classifier(args, train, dev):
             loss.backward()
             optimizer.step()
             epoch_loss += loss.item()
-        
-        print(f"Epoch {epoch+1}/{num_epochs} - loss={epoch_loss:.4f}")
-
-        model.eval()
-        correct = total = 0
-        with torch.no_grad():
-            for ex in dev[:200]:  
-                logp, _ = model(ex.input_tensor)
-                pred = torch.argmax(logp, dim=1)
-                correct += int((pred == ex.output_tensor).sum())
-                total += len(pred)
-        dev_acc = correct / total if total else 0.0
-        print(f"  dev_acc={dev_acc:.4f}")
-
-        if dev_acc > best_acc:
-            best_acc = dev_acc
-            best_state = {k: v.clone() for k, v in model.state_dict().items()}
-
-        model.train()
-
-    if best_state is not None:
-        model.load_state_dict(best_state)
 
     model.eval()
     return model
