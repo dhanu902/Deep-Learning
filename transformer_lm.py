@@ -108,17 +108,18 @@ class NeuralLanguageModel(LanguageModel):
 def train_lm(args, train_text, dev_text, vocab_index):
     random.seed(42); np.random.seed(42); torch.manual_seed(42)
 
-    device = torch.device("cpu")
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"Using device: {device}")
     vocab_size = len(vocab_index)  
-    d_model = 192
+    d_model = 256
     nhead = 8
-    num_layers = 4
-    dim_feedforward = 768
+    num_layers = 6
+    dim_feedforward = 1024
     dropout = 0.1
     max_len = 1024
-    seq_len = 128        
+    seq_len = 256        
     batch_size = 64     
-    num_epochs = 10
+    num_epochs = 15
     lr = 3e-4
 
     # Create PyTorch model
@@ -128,7 +129,7 @@ def train_lm(args, train_text, dev_text, vocab_index):
     pytorch_model.to(device)
 
     optimizer = optim.Adam(pytorch_model.parameters(), lr=lr)
-    scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=4, gamma=0.5)
+    scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=5, gamma=0.7)
     loss_fn = nn.NLLLoss()
    
     train_indices = [vocab_index.index_of(c) for c in train_text]
